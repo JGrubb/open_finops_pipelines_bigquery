@@ -1,0 +1,24 @@
+[project]
+name = "open-finops-pipelines-bigquery"
+version = "0.1.0"
+description = "Cloud billing data pipelines from GCS to BigQuery using DLT"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dlt[bigquery]>=1.5.0",
+    "google-cloud-bigquery-storage>=2.33.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]

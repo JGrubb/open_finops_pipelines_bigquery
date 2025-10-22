@@ -1,0 +1,25 @@
+# DLT Configuration (non-sensitive values)
+# Copy this file to config.toml and update with your values
+
+# AWS billing source
+# GCS transfer structure: gcs-transfer/aws_cur/YYYYMMDD-YYYYMMDD/*-Manifest.json
+[sources.aws_cur]
+bucket = "your-gcs-bucket"
+prefix = "gcs-transfer/aws_cur"
+table_name = "aws_cur_data"
+project_id = "your-gcp-project"
+dataset = "aws_billing_data"
+
+# Azure billing source
+[sources.azure_billing]
+bucket = "your-gcs-bucket"
+prefix = "gcs-transfer/azure/billingdata"
+export_name = "your-billing-export"
+table_name = "azure_focus_billing_data"
+project_id = "your-gcp-project"
+dataset = "azure_billing_data"
+
+# BigQuery destination (shared location setting)
+[destination.bigquery]
+location = "US"
+project_id = "your-gcp-project"
