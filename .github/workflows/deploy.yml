@@ -1,0 +1,44 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: us-central1
+  IMAGE_NAME: billing-pipeline
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - id: auth
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+        service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Build and deploy
+      run: make update
+      env:
+        AWS_GCS_BUCKET: ${{ secrets.AWS_GCS_BUCKET }}
+        AWS_GCS_PREFIX: ${{ secrets.AWS_GCS_PREFIX }}
+        AWS_TABLE_NAME: ${{ secrets.AWS_TABLE_NAME }}
+        AWS_DATASET: ${{ secrets.AWS_DATASET }}
+        AZURE_GCS_BUCKET: ${{ secrets.AZURE_GCS_BUCKET }}
+        AZURE_GCS_PREFIX: ${{ secrets.AZURE_GCS_PREFIX }}
+        AZURE_EXPORT_NAME: ${{ secrets.AZURE_EXPORT_NAME }}
+        AZURE_TABLE_NAME: ${{ secrets.AZURE_TABLE_NAME }}
+        AZURE_DATASET: ${{ secrets.AZURE_DATASET }}
