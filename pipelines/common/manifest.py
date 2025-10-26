@@ -118,7 +118,7 @@ class ManifestDiscovery:
         Yields:
             AzureManifest objects sorted by billing period (newest first)
         """
-        # Pattern: gcs-transfer/azure/billingdata/plotly-billing-focus-cost/
+        # Pattern: gcs-transfer/azure/billingdata/{export-name}/
         #          20251001-20251031/202510210349/aa7e.../manifest.json
         pattern = re.compile(
             rf"^{re.escape(prefix)}/{re.escape(export_name)}/"
