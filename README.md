@@ -23,7 +23,57 @@
 - Azure follows largely the same plan, but the schema doesn't change.  It also proivides a manifest file that we should inspect.
 
 Because we will be using entirely GCP infra for this, the confiuguration should be fairly minimal:
-- for each vendor, a source bucket, directory, and name of the export.  
+- for each vendor, a source bucket, directory, and name of the export.
 From there you should be able to pull the manifest and proceed.
 
 Use `uv run` and keep the footprint as minimal as possible.  Ideally we'll extend this to AWS and Azure billing data, setting up native GCP data transfers into GCS buckets, with Bigquery as the destination.
+
+## Deployment
+
+This project deploys to GCP Cloud Run as scheduled jobs.
+
+### Quick Deploy
+
+```bash
+# 1. Configure
+cp .env.example .env
+# Edit .env with your GCP project and bucket details
+
+# 2. Deploy
+make setup-gcp
+make setup-permissions
+make deploy
+```
+
+See [QUICKSTART.md](QUICKSTART.md) for detailed instructions.
+
+### Architecture
+
+- **DLT** handles state management and deduplication
+- **BigQuery native LOAD** ingests data directly from GCS (zero data copying)
+- **Cloud Run Jobs** execute pipelines on schedule
+- **Cloud Scheduler** triggers daily at configurable times
+
+### Configuration
+
+All configuration uses environment variables for customer-agnostic deployment:
+
+- Copy `.env.example` to `.env`
+- Set your GCP project, buckets, and dataset names
+- Deploy with `make deploy`
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for advanced configuration.
+
+## Development
+
+```bash
+# Install dependencies
+uv sync
+
+# Run locally (requires .dlt/config.toml)
+uv run python main.py aws
+uv run python main.py azure
+
+# Run tests
+uv run pytest
+```
