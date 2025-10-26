@@ -1,25 +1,31 @@
 # DLT Configuration (non-sensitive values)
-# Copy this file to config.toml and update with your values
+# This file shows the config structure - actual values come from environment variables
+#
+# Environment variable format: SOURCES__AWS_CUR__BUCKET, SOURCES__AZURE_BILLING__PROJECT_ID, etc.
+# Double underscores (__) separate nested config sections
+#
+# For deployment: Set environment variables in Cloud Run job
+# For local dev: Use .env file (see .env.example)
 
 # AWS billing source
-# GCS transfer structure: gcs-transfer/aws_cur/YYYYMMDD-YYYYMMDD/*-Manifest.json
+# GCS transfer structure: {prefix}/YYYYMMDD-YYYYMMDD/*-Manifest.json
 [sources.aws_cur]
-bucket = "your-gcs-bucket"
-prefix = "gcs-transfer/aws_cur"
-table_name = "aws_cur_data"
-project_id = "your-gcp-project"
-dataset = "aws_billing_data"
+bucket = "your-gcs-bucket"              # or env: SOURCES__AWS_CUR__BUCKET
+prefix = "gcs-transfer/aws_cur"         # or env: SOURCES__AWS_CUR__PREFIX
+table_name = "aws_cur_data"             # or env: SOURCES__AWS_CUR__TABLE_NAME
+project_id = "your-gcp-project"         # or env: SOURCES__AWS_CUR__PROJECT_ID
+dataset = "aws_billing_data"            # or env: SOURCES__AWS_CUR__DATASET
 
 # Azure billing source
 [sources.azure_billing]
-bucket = "your-gcs-bucket"
-prefix = "gcs-transfer/azure/billingdata"
-export_name = "your-billing-export"
-table_name = "azure_focus_billing_data"
-project_id = "your-gcp-project"
-dataset = "azure_billing_data"
+bucket = "your-gcs-bucket"              # or env: SOURCES__AZURE_BILLING__BUCKET
+prefix = "gcs-transfer/azure/billingdata"  # or env: SOURCES__AZURE_BILLING__PREFIX
+export_name = "your-azure-export"       # or env: SOURCES__AZURE_BILLING__EXPORT_NAME
+table_name = "azure_focus_billing_data" # or env: SOURCES__AZURE_BILLING__TABLE_NAME
+project_id = "your-gcp-project"         # or env: SOURCES__AZURE_BILLING__PROJECT_ID
+dataset = "azure_billing_data"          # or env: SOURCES__AZURE_BILLING__DATASET
 
 # BigQuery destination (shared location setting)
 [destination.bigquery]
-location = "US"
-project_id = "your-gcp-project"
+location = "US"                         # or env: DESTINATION__BIGQUERY__LOCATION
+project_id = "your-gcp-project"         # or env: DESTINATION__BIGQUERY__PROJECT_ID
