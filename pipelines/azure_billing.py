@@ -91,13 +91,31 @@ def azure_billing_resource(
     for manifest in manifests:
         billing_month = manifest.billing_month
         run_id = manifest.run_id
+        submitted_time = manifest.submitted_time
 
         # Check if already loaded (DLT state check)
-        if run_id in loaded_executions.get(billing_month, []):
-            print(f"Skipping {billing_month} (run_id: {run_id}) - already loaded")
-            continue
+        # New state structure: {"2025-10": {"run_id": "...", "submitted_time": "..."}}
+        # Old state structure: {"2025-10": ["run_id1", "run_id2", ...]}
+        if billing_month in loaded_executions:
+            existing_entry = loaded_executions[billing_month]
 
-        print(f"Processing {billing_month} (run_id: {run_id})")
+            # Handle backward compatibility with old list-based state
+            if isinstance(existing_entry, list):
+                # Old format: check if run_id is in the list
+                if run_id in existing_entry:
+                    print(f"Skipping {billing_month} (run_id: {run_id}) - already loaded")
+                    continue
+                else:
+                    print(f"Found newer manifest for {billing_month} (run_id: {run_id}), will reload")
+            else:
+                # New format: dict with run_id and submitted_time
+                if existing_entry["run_id"] == run_id:
+                    print(f"Skipping {billing_month} (run_id: {run_id}) - already loaded")
+                    continue
+                else:
+                    print(f"Found newer manifest for {billing_month} (run_id: {run_id}), will reload")
+
+        print(f"Processing {billing_month} (run_id: {run_id}, submitted: {submitted_time})")
 
         # Delete existing partition before loading
         # Azure FOCUS uses BillingPeriodStart column
@@ -135,10 +153,11 @@ def azure_billing_resource(
 
         print(f"  Loaded {load_job.output_rows} rows to {table_name}")
 
-        # Mark as loaded in DLT state
-        if billing_month not in loaded_executions:
-            loaded_executions[billing_month] = []
-        loaded_executions[billing_month].append(run_id)
+        # Mark as loaded in DLT state (hybrid approach: track run_id + timestamp)
+        loaded_executions[billing_month] = {
+            "run_id": run_id,
+            "submitted_time": submitted_time,
+        }
 
         print(f"Completed loading {billing_month} (run_id: {run_id})")
 

@@ -36,11 +36,27 @@ class AzureManifest:
     blobs: list[dict]
     manifest_path: str
     file_format: str
+    submitted_time: str  # ISO timestamp from runInfo.submittedTime
 
     @property
     def billing_date(self) -> datetime:
         """Parse billing month as datetime."""
         return datetime.strptime(self.billing_month, "%Y-%m")
+
+    @property
+    def submitted_datetime(self) -> datetime:
+        """Parse submitted_time as datetime."""
+        # Handle both formats: with and without fractional seconds
+        # "2025-10-16T03:48:05.0084806Z" or "2025-10-16T03:48:05Z"
+        time_str = self.submitted_time.rstrip('Z')
+        if '.' in time_str:
+            # Azure timestamps have 7 decimal places, but Python's %f only handles 6
+            # Truncate to 6 digits
+            parts = time_str.split('.')
+            if len(parts[1]) > 6:
+                time_str = f"{parts[0]}.{parts[1][:6]}"
+            return datetime.strptime(time_str, "%Y-%m-%dT%H:%M:%S.%f")
+        return datetime.strptime(time_str, "%Y-%m-%dT%H:%M:%S")
 
 
 class ManifestDiscovery:
@@ -111,12 +127,17 @@ class ManifestDiscovery:
         Azure path pattern:
         {prefix}/{export_name}/YYYYMMDD-YYYYMMDD/YYYYMMDDHHmm/{run_id}/manifest.json
 
+        For each billing month, returns ONLY the most recent manifest based on
+        runInfo.submittedTime. This handles the case where Azure exports don't
+        delete old versions and multiple manifests exist for the same month.
+
         Args:
             prefix: GCS prefix path
             export_name: Azure export name
 
         Yields:
-            AzureManifest objects sorted by billing period (newest first)
+            AzureManifest objects sorted by billing period (newest first),
+            with only the most recent manifest per month
         """
         # Pattern: gcs-transfer/azure/billingdata/{export-name}/
         #          20251001-20251031/202510210349/aa7e.../manifest.json
@@ -128,7 +149,7 @@ class ManifestDiscovery:
             r"manifest\.json$"
         )
 
-        manifests = []
+        all_manifests = []
         for blob in self.bucket.list_blobs(prefix=f"{prefix}/{export_name}/"):
             if pattern.match(blob.name):
                 manifest_data = json.loads(blob.download_as_text())
@@ -138,16 +159,35 @@ class ManifestDiscovery:
                 # Format: "2025-10-01T00:00:00" -> "2025-10"
                 billing_month = start_date[:7]
 
-                manifests.append(
+                all_manifests.append(
                     AzureManifest(
                         run_id=manifest_data["runInfo"]["runId"],
                         billing_month=billing_month,
                         blobs=manifest_data["blobs"],
                         manifest_path=blob.name,
                         file_format=manifest_data["deliveryConfig"]["fileFormat"],
+                        submitted_time=manifest_data["runInfo"]["submittedTime"],
                     )
                 )
 
-        # Sort by billing period, newest first
-        manifests.sort(key=lambda m: m.billing_date, reverse=True)
+        # Group by billing month and select most recent per month
+        from itertools import groupby
+
+        # Sort by billing month (newest first), then by submitted time (newest first)
+        all_manifests.sort(
+            key=lambda m: (m.billing_date, m.submitted_datetime),
+            reverse=True
+        )
+
+        # Group by billing month and take the first (most recent) from each group
+        manifests = []
+        for billing_month, group in groupby(all_manifests, key=lambda m: m.billing_month):
+            most_recent = next(group)  # First item is most recent due to sorting
+            manifests.append(most_recent)
+
+            # Log skipped manifests for visibility
+            skipped = list(group)
+            if skipped:
+                print(f"  Found {len(skipped)} older manifest(s) for {billing_month}, using most recent (submitted: {most_recent.submitted_time})")
+
         yield from manifests
