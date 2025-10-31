@@ -21,3 +21,17 @@ wheels/
 # IDE
 .vscode/
 .idea/
+
+# Environment files with project-specific config
+.envrc
+.env
+.env.local
+.env.*.local
+
+# Claude Memory - Include core files, exclude private data
+.claude/sessions/
+.claude/backups/
+.claude/memory.json
+
+# But include the core system
+!CLAUDE.md
