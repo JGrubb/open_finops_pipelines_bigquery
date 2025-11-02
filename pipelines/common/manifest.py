@@ -72,26 +72,29 @@ class ManifestDiscovery:
         self.client = storage.Client()
         self.bucket = self.client.bucket(bucket_name)
 
-    def discover_aws_manifests(self, prefix: str, export_name: str = None) -> Iterator[AWSManifest]:
+    def discover_aws_manifests(self, prefix: str, export_name: str) -> Iterator[AWSManifest]:
         """
         Discover AWS CUR v1 manifest files in GCS.
 
-        GCS transfer path pattern:
-        {prefix}/YYYYMMDD-YYYYMMDD/*-Manifest.json
+        New AWS export structure has top-level manifests at each month directory:
+        {prefix}/YYYYMMDD-YYYYMMDD/{export_name}-Manifest.json
+
+        Each top-level manifest contains the latest assemblyId and reportKeys
+        pointing to the current version's files in versioned subdirectories.
 
         Args:
-            prefix: GCS prefix path (e.g., "gcs-transfer/aws_cur")
-            export_name: Legacy parameter, not used for GCS transfers
+            prefix: GCS prefix path (e.g., "gcs-transfer/aws_cur/report-name")
+            export_name: AWS CUR export name (e.g., "report-name")
 
         Yields:
             AWSManifest objects sorted by billing period (newest first)
         """
-        # Pattern for GCS-transferred files: gcs-transfer/aws_cur/YYYYMMDD-YYYYMMDD/*-Manifest.json
-        # Match any file ending in -Manifest.json in a date-range directory
+        # Pattern for top-level manifests: {prefix}/YYYYMMDD-YYYYMMDD/{export_name}-Manifest.json
+        # This matches ONLY the top-level manifest, not versioned subdirectory manifests
         pattern = re.compile(
             rf"^{re.escape(prefix.rstrip('/'))}/"
             r"(\d{8})-(\d{8})/"
-            r".*-Manifest\.json$"
+            rf"{re.escape(export_name)}-Manifest\.json$"
         )
 
         manifests = []

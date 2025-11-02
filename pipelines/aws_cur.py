@@ -31,6 +31,7 @@ SQL_RESERVED_WORDS = {
 def aws_billing_source(
     bucket: str = dlt.config.value,
     prefix: str = dlt.config.value,
+    export_name: str = dlt.config.value,
     table_name: str = dlt.config.value,
     project_id: str = dlt.config.value,
     dataset: str = dlt.config.value,
@@ -46,7 +47,8 @@ def aws_billing_source(
 
     Args:
         bucket: GCS bucket name
-        prefix: GCS prefix path (e.g., "gcs-transfer/aws_cur")
+        prefix: GCS prefix path (e.g., "gcs-transfer/aws_cur/report-name")
+        export_name: AWS CUR export name (e.g., "report-name")
         table_name: BigQuery table name
         project_id: BigQuery project ID
         dataset: BigQuery dataset
@@ -61,12 +63,13 @@ def aws_billing_source(
         name=f"{table_name}_load_tracking",
         write_disposition="append",
     )
-    return resource_func(bucket, prefix, table_name, project_id, dataset)
+    return resource_func(bucket, prefix, export_name, table_name, project_id, dataset)
 
 
 def aws_billing_resource(
     bucket: str,
     prefix: str,
+    export_name: str,
     table_name: str,
     project_id: str,
     dataset: str,
@@ -80,6 +83,7 @@ def aws_billing_resource(
     Args:
         bucket: GCS bucket name
         prefix: GCS prefix path
+        export_name: AWS CUR export name
         table_name: BigQuery table name (actual billing data table)
         project_id: BigQuery project ID
         dataset: BigQuery dataset name
@@ -93,7 +97,7 @@ def aws_billing_resource(
 
     # Discover manifests (newest first)
     discovery = ManifestDiscovery(bucket)
-    manifests = list(discovery.discover_aws_manifests(prefix))
+    manifests = list(discovery.discover_aws_manifests(prefix, export_name))
 
     print(f"Discovered {len(manifests)} AWS CUR manifests")
 
@@ -106,9 +110,26 @@ def aws_billing_resource(
         assembly_id = manifest.assembly_id
 
         # Check if already loaded (DLT state check)
-        if assembly_id in loaded_executions.get(billing_month, []):
-            print(f"Skipping {billing_month} (assembly_id: {assembly_id}) - already loaded")
-            continue
+        # New state structure: {"2025-10": {"assembly_id": "...", "loaded_at": "..."}}
+        # Old state structure: {"2025-10": ["assembly_id1", "assembly_id2", ...]}
+        if billing_month in loaded_executions:
+            existing_entry = loaded_executions[billing_month]
+
+            # Handle backward compatibility with old list-based state
+            if isinstance(existing_entry, list):
+                # Old format: check if assembly_id is in the list
+                if assembly_id in existing_entry:
+                    print(f"Skipping {billing_month} (assembly_id: {assembly_id}) - already loaded")
+                    continue
+                else:
+                    print(f"Found newer manifest for {billing_month} (assembly_id: {assembly_id}), will reload")
+            else:
+                # New format: dict with assembly_id and loaded_at
+                if existing_entry["assembly_id"] == assembly_id:
+                    print(f"Skipping {billing_month} (assembly_id: {assembly_id}) - already loaded")
+                    continue
+                else:
+                    print(f"Found newer manifest for {billing_month} (assembly_id: {assembly_id}), will reload")
 
         print(f"Processing {billing_month} (assembly_id: {assembly_id})")
 
@@ -140,6 +161,11 @@ def aws_billing_resource(
             allow_jagged_rows=False,
             allow_quoted_newlines=True,
             field_delimiter=",",
+            time_partitioning=bigquery.TimePartitioning(
+                type_=bigquery.TimePartitioningType.MONTH,
+                field="bill_billing_period_start_date",
+            ),
+            clustering_fields=["line_item_usage_start_date"],
         )
 
         # Load directly from GCS URIs (no data download!)
@@ -155,10 +181,11 @@ def aws_billing_resource(
 
         print(f"  Loaded {load_job.output_rows} rows to {table_name}")
 
-        # Mark as loaded in DLT state
-        if billing_month not in loaded_executions:
-            loaded_executions[billing_month] = []
-        loaded_executions[billing_month].append(assembly_id)
+        # Mark as loaded in DLT state (hybrid approach: track assembly_id + timestamp)
+        loaded_executions[billing_month] = {
+            "assembly_id": assembly_id,
+            "loaded_at": datetime.now(timezone.utc).isoformat(),
+        }
 
         print(f"Completed loading {billing_month} (assembly_id: {assembly_id})")
 
@@ -209,8 +236,11 @@ def _build_gcs_uris(bucket: str, manifest: AWSManifest) -> list[str]:
     """
     Build GCS URIs from AWS CUR manifest report keys.
 
-    AWS manifests contain reportKeys with original S3 paths, but files are
-    actually in the same directory as the manifest in GCS.
+    AWS manifests contain reportKeys with S3-style paths. The GCS Transfer Service
+    replicates the directory structure, so we need to map the reportKey path to GCS.
+
+    The reportKeys include the versioned subdirectory (assemblyId timestamp):
+    "CUR/account/YYYYMMDD-YYYYMMDD/YYYYMMDDTHHmmssZ/file.csv.gz"
 
     Args:
         bucket: GCS bucket name
@@ -219,17 +249,27 @@ def _build_gcs_uris(bucket: str, manifest: AWSManifest) -> list[str]:
     Returns:
         List of GCS URIs (gs://bucket/path/file.csv.gz)
     """
-    # Get directory containing the manifest
-    # manifest_path format: gcs-transfer/aws_cur/YYYYMMDD-YYYYMMDD/aws-billing-csv-Manifest.json
+    # Get base directory containing the manifest
+    # manifest_path format: gcs-transfer/aws_doit/CUR/account/YYYYMMDD-YYYYMMDD/account-Manifest.json
     manifest_dir = "/".join(manifest.manifest_path.split("/")[:-1])
 
     uris = []
     for file_key in manifest.report_keys:
-        # Extract just the filename from the reportKey path
-        filename = file_key.split("/")[-1]
+        # reportKey format: CUR/account/YYYYMMDD-YYYYMMDD/assemblyId/file.csv.gz
+        # We need to extract the path after the date range to get: assemblyId/file.csv.gz
+
+        # Find the versioned subdirectory and filename (everything after the date range)
+        # Split by "/" and take the last 2 parts (assemblyId/filename)
+        parts = file_key.split("/")
+        if len(parts) >= 2:
+            # Take last 2 parts: assemblyId and filename
+            relative_path = "/".join(parts[-2:])
+        else:
+            # Fallback: just use the filename
+            relative_path = parts[-1]
 
         # Construct actual GCS path
-        gcs_path = f"{manifest_dir}/{filename}"
+        gcs_path = f"{manifest_dir}/{relative_path}"
         uri = f"gs://{bucket}/{gcs_path}"
         uris.append(uri)
 
