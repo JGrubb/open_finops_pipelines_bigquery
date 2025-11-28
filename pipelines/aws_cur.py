@@ -78,7 +78,8 @@ def aws_billing_resource(
     Load AWS billing data using BigQuery native LOAD from GCS.
 
     Uses DLT state to track loaded executions and avoid duplicates.
-    BigQuery loads gzipped CSV files directly from GCS URIs (zero data copying).
+    Auto-detects format (CSV or Parquet) from manifest contentType field.
+    BigQuery loads files directly from GCS URIs (zero data copying).
 
     Args:
         bucket: GCS bucket name
@@ -139,34 +140,26 @@ def aws_billing_resource(
             table_name, "bill_billing_period_start_date", partition_date
         )
 
-        # Build GCS URIs from manifest - handle path mismatch
-        gcs_uris = _build_gcs_uris(bucket, manifest)
+        # Auto-detect format from manifest contentType
+        is_parquet = manifest.content_type == "Parquet"
 
-        print(f"  Loading {len(gcs_uris)} CSV files from GCS...")
-        for uri in gcs_uris:
-            print(f"    {uri}")
-
-        # Build BigQuery schema from manifest with normalized column names
-        schema = _build_bigquery_schema(manifest)
-
-        # Configure BigQuery load job for gzipped CSV
-        job_config = bigquery.LoadJobConfig(
-            source_format=bigquery.SourceFormat.CSV,
-            write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-            schema=schema,  # Use our normalized schema
-            schema_update_options=[
-                bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,  # AWS adds columns over time
-            ],
-            skip_leading_rows=1,  # Skip CSV header row (has original names with slashes)
-            allow_jagged_rows=False,
-            allow_quoted_newlines=True,
-            field_delimiter=",",
-            time_partitioning=bigquery.TimePartitioning(
-                type_=bigquery.TimePartitioningType.MONTH,
-                field="bill_billing_period_start_date",
-            ),
-            clustering_fields=["line_item_usage_start_date"],
-        )
+        if is_parquet:
+            # Parquet format: build URIs and config for Parquet files
+            gcs_uris = _build_parquet_gcs_uris(bucket, manifest)
+            print(f"  Loading {len(gcs_uris)} Parquet files from GCS...")
+            for uri in gcs_uris[:5]:  # Show first 5
+                print(f"    {uri}")
+            if len(gcs_uris) > 5:
+                print(f"    ... and {len(gcs_uris) - 5} more")
+            job_config = _build_parquet_job_config()
+        else:
+            # CSV format: build URIs, schema, and config for CSV files
+            gcs_uris = _build_csv_gcs_uris(bucket, manifest)
+            print(f"  Loading {len(gcs_uris)} CSV files from GCS...")
+            for uri in gcs_uris:
+                print(f"    {uri}")
+            schema = _build_bigquery_schema(manifest)
+            job_config = _build_csv_job_config(schema)
 
         # Load directly from GCS URIs (no data download!)
         table_id = f"{project_id}.{dataset}.{table_name}"
@@ -196,6 +189,7 @@ def aws_billing_resource(
             "loaded_at": datetime.now(timezone.utc),
             "row_count": load_job.output_rows,
             "file_count": len(gcs_uris),
+            "format": "parquet" if is_parquet else "csv",
         }
 
 
@@ -232,9 +226,9 @@ def _resolve_duplicate_names(column_names: list[str]) -> list[str]:
     return resolved
 
 
-def _build_gcs_uris(bucket: str, manifest: AWSManifest) -> list[str]:
+def _build_csv_gcs_uris(bucket: str, manifest: AWSManifest) -> list[str]:
     """
-    Build GCS URIs from AWS CUR manifest report keys.
+    Build GCS URIs from AWS CUR manifest report keys for CSV format.
 
     AWS manifests contain reportKeys with S3-style paths. The GCS Transfer Service
     replicates the directory structure, so we need to map the reportKey path to GCS.
@@ -274,6 +268,102 @@ def _build_gcs_uris(bucket: str, manifest: AWSManifest) -> list[str]:
         uris.append(uri)
 
     return uris
+
+
+def _build_parquet_gcs_uris(bucket: str, manifest: AWSManifest) -> list[str]:
+    """
+    Build GCS URIs from AWS CUR manifest report keys for Parquet format.
+
+    Parquet exports use Hive-style partitioning with a different path structure:
+    reportKey: "billing/aws-billing-cur/{export}/{export}/year=YYYY/month=MM/file.snappy.parquet"
+
+    The manifest_path is at: {prefix}/YYYYMMDD-YYYYMMDD/{export}-Manifest.json
+    The data files are at: {prefix}/{export}/year=YYYY/month=MM/file.snappy.parquet
+
+    Args:
+        bucket: GCS bucket name
+        manifest: AWS manifest object with manifest_path and report_keys
+
+    Returns:
+        List of GCS URIs (gs://bucket/path/file.snappy.parquet)
+    """
+    # Get prefix directory (parent of the date-range directory)
+    # manifest_path format: gcs-transfer/.../plotly_cur_export_2025/20251101-20251201/plotly_cur_export_2025-Manifest.json
+    manifest_parts = manifest.manifest_path.split("/")
+    # Remove the last 2 parts (date-range dir and manifest filename) to get prefix
+    prefix_dir = "/".join(manifest_parts[:-2])
+
+    uris = []
+    for file_key in manifest.report_keys:
+        # reportKey format: billing/aws-billing-cur/plotly_cur_export_2025/plotly_cur_export_2025/year=2025/month=11/file.snappy.parquet
+        # We need: {export}/year=YYYY/month=MM/filename (last 4 parts)
+        parts = file_key.split("/")
+        if len(parts) >= 4:
+            # Take last 4 parts: export_name/year=YYYY/month=MM/filename
+            relative_path = "/".join(parts[-4:])
+        else:
+            # Fallback: just use the filename
+            relative_path = parts[-1]
+
+        # Construct actual GCS path
+        gcs_path = f"{prefix_dir}/{relative_path}"
+        uri = f"gs://{bucket}/{gcs_path}"
+        uris.append(uri)
+
+    return uris
+
+
+def _build_csv_job_config(schema: list[bigquery.SchemaField]) -> bigquery.LoadJobConfig:
+    """
+    Build BigQuery load job config for gzipped CSV files.
+
+    Args:
+        schema: BigQuery schema fields with normalized column names
+
+    Returns:
+        LoadJobConfig for CSV format
+    """
+    return bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.CSV,
+        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+        schema=schema,
+        schema_update_options=[
+            bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
+        ],
+        skip_leading_rows=1,  # Skip CSV header row
+        allow_jagged_rows=False,
+        allow_quoted_newlines=True,
+        field_delimiter=",",
+        time_partitioning=bigquery.TimePartitioning(
+            type_=bigquery.TimePartitioningType.MONTH,
+            field="bill_billing_period_start_date",
+        ),
+        clustering_fields=["line_item_usage_start_date"],
+    )
+
+
+def _build_parquet_job_config() -> bigquery.LoadJobConfig:
+    """
+    Build BigQuery load job config for Parquet files.
+
+    Parquet is self-describing so no schema needed.
+    BigQuery auto-detects column names and types from the Parquet file metadata.
+
+    Returns:
+        LoadJobConfig for Parquet format
+    """
+    return bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.PARQUET,
+        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+        schema_update_options=[
+            bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
+        ],
+        time_partitioning=bigquery.TimePartitioning(
+            type_=bigquery.TimePartitioningType.MONTH,
+            field="bill_billing_period_start_date",
+        ),
+        clustering_fields=["line_item_usage_start_date"],
+    )
 
 
 def _build_bigquery_schema(manifest: AWSManifest) -> list[bigquery.SchemaField]:
