@@ -78,6 +78,13 @@ def azure_billing_resource(
     state = dlt.current.resource_state()
     loaded_executions = state.setdefault("loaded_executions", {})
 
+    # Track run statistics for data quality monitoring
+    run_stats = {
+        "total_rows": 0,
+        "manifests_processed": 0,
+        "manifests_skipped": 0,
+    }
+
     # Discover manifests (newest first)
     discovery = ManifestDiscovery(bucket)
     manifests = list(discovery.discover_azure_manifests(prefix, export_name))
@@ -104,6 +111,7 @@ def azure_billing_resource(
                 # Old format: check if run_id is in the list
                 if run_id in existing_entry:
                     print(f"Skipping {billing_month} (run_id: {run_id}) - already loaded")
+                    run_stats["manifests_skipped"] += 1
                     continue
                 else:
                     print(f"Found newer manifest for {billing_month} (run_id: {run_id}), will reload")
@@ -111,6 +119,7 @@ def azure_billing_resource(
                 # New format: dict with run_id and submitted_time
                 if existing_entry["run_id"] == run_id:
                     print(f"Skipping {billing_month} (run_id: {run_id}) - already loaded")
+                    run_stats["manifests_skipped"] += 1
                     continue
                 else:
                     print(f"Found newer manifest for {billing_month} (run_id: {run_id}), will reload")
@@ -161,6 +170,10 @@ def azure_billing_resource(
 
         print(f"Completed loading {billing_month} (run_id: {run_id})")
 
+        # Update run statistics
+        run_stats["total_rows"] += load_job.output_rows
+        run_stats["manifests_processed"] += 1
+
         # Yield minimal tracking record (DLT will persist state after run completes)
         yield {
             "run_id": run_id,
@@ -169,6 +182,22 @@ def azure_billing_resource(
             "row_count": load_job.output_rows,
             "file_count": len(gcs_uris),
         }
+
+    # Always yield a run summary record for data quality monitoring
+    # This ensures we have a record even when all manifests are skipped (0 rows loaded)
+    run_date = datetime.now(timezone.utc).date().isoformat()
+    yield {
+        "run_date": run_date,
+        "total_rows": run_stats["total_rows"],
+        "manifests_processed": run_stats["manifests_processed"],
+        "manifests_skipped": run_stats["manifests_skipped"],
+        "is_run_summary": True,
+        "loaded_at": datetime.now(timezone.utc),
+    }
+
+    print(f"\nRun summary: {run_stats['total_rows']} rows loaded, "
+          f"{run_stats['manifests_processed']} processed, "
+          f"{run_stats['manifests_skipped']} skipped")
 
 
 def _build_gcs_uris(bucket: str, manifest: AzureManifest) -> list[str]:
