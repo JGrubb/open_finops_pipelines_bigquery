@@ -2,6 +2,10 @@
 
 Cloud billing data ingestion pipelines for AWS and Azure, loading from GCS into BigQuery.
 
+## Why This Exists
+
+Most FinOps platforms charge based on data volume or row counts. This project lets you load cloud billing data directly into BigQuery at infrastructure cost only - just GCS storage and BigQuery loading fees. You own your data, control your schema, and can query with standard SQL.
+
 ## Overview
 
 This project provides scheduled data pipelines that ingest multi-cloud billing data into BigQuery using manifest-based loading strategies. Built with DLT for state management and BigQuery native LOAD operations for performance.
@@ -53,6 +57,13 @@ This project provides scheduled data pipelines that ingest multi-cloud billing d
 
 This project deploys to GCP Cloud Run as scheduled jobs.
 
+### Prerequisites
+
+- GCP project with billing enabled
+- `gcloud` CLI installed and authenticated
+- Source data in GCS buckets (via [GCP Data Transfer Service](https://cloud.google.com/bigquery/docs/s3-transfer) for AWS, or Azure export configured to GCS)
+- `uv` for Python dependency management
+
 ### Quick Deploy
 
 ```bash
@@ -68,12 +79,12 @@ make deploy
 
 See [QUICKSTART.md](QUICKSTART.md) for detailed instructions.
 
-### Architecture
+### Tech Stack
 
-- **DLT** handles state management and deduplication
-- **BigQuery native LOAD** ingests data directly from GCS (zero data copying)
-- **Cloud Run Jobs** execute pipelines on schedule
-- **Cloud Scheduler** triggers daily at configurable times
+- **DLT** - State management and deduplication tracking
+- **BigQuery native LOAD** - Direct GCS ingestion (zero data copying)
+- **Cloud Run Jobs** - Serverless pipeline execution
+- **Cloud Scheduler** - Daily triggers at configurable times
 
 ### Configuration
 
