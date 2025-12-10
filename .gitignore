@@ -35,3 +35,5 @@ wheels/
 
 # But include the core system
 !CLAUDE.md
+.claude
+docs/plans
